@@ -1,0 +1,22 @@
+{
+  "name": "simple-sample",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "preview": "nuxt preview",
+    "typecheck": "nuxt typecheck",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "@agent-web-bridge/server": "workspace:*",
+    "@agent-web-bridge/vue": "workspace:*",
+    "@anthropic-ai/claude-agent-sdk": "0.3.309",
+    "nuxt": "~4.5.2",
+    "vue": "^3.5.44"
+  },
+  "devDependencies": {
+    "vue-tsc": "^3.3.13"
+  }
+}

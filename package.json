@@ -1,0 +1,15 @@
+{
+  "name": "agent-web-bridge",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.22.0",
+  "scripts": {
+    "dev": "pnpm --filter simple-sample dev",
+    "build": "pnpm -r --filter \"./packages/*\" --filter \"!simple-sample\" build",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "tsdown": "0.23.2",
+    "typescript": "~5.9.3"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@agent-web-bridge/protocol",
+  "version": "0.1.0",
+  "description": "Wire types shared by @agent-web-bridge/server and @agent-web-bridge/vue",
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.mts",
+        "import": "./dist/index.mjs"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "pnpm build"
+  }
+}
