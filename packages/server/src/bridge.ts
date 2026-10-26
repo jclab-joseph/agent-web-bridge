@@ -111,8 +111,10 @@ export class AgentBridge {
         return this.send(command.sessionId, { text: command.text, images: command.images })
       case 'session.interrupt':
         return this.interrupt(command.sessionId)
-      case 'session.update':
-        return this.update(command.sessionId, { model: command.model, permissionMode: command.permissionMode })
+      case 'session.update': {
+        const { model, permissionMode, effort } = command
+        return this.update(command.sessionId, { model, permissionMode, effort })
+      }
       case 'session.permission': {
         const { decision, message, answers } = command
         return this.respondPermission(command.sessionId, command.requestId, { decision, message, answers })
@@ -131,6 +133,7 @@ export class AgentBridge {
     const cwd = await this.checkCwd(request.cwd)
     checkOption(provider.info.models, request.model, 'model')
     checkOption(provider.info.permissionModes, request.permissionMode, 'permission mode')
+    checkOption(provider.info.efforts, request.effort, 'effort')
     const now = Date.now()
     const record: SessionRecord = {
       id: randomUUID(),
@@ -139,6 +142,7 @@ export class AgentBridge {
       cwd,
       model: request.model ?? provider.info.defaultModel,
       permissionMode: request.permissionMode ?? provider.info.defaultPermissionMode,
+      effort: request.effort ?? provider.info.defaultEffort,
       createdAt: now,
       lastActiveAt: now,
       meta: context.meta,
@@ -175,13 +179,15 @@ export class AgentBridge {
     await this.live.get(id)?.runtime?.interrupt()
   }
 
-  async update(id: string, options: { model?: string; permissionMode?: string }): Promise<void> {
+  async update(id: string, options: { model?: string; permissionMode?: string; effort?: string }): Promise<void> {
     const record = await this.record(id)
     const { info } = this.provider(record.agentId)
     checkOption(info.models, options.model, 'model')
     checkOption(info.permissionModes, options.permissionMode, 'permission mode')
+    checkOption(info.efforts, options.effort, 'effort')
     if (options.model !== undefined) record.model = options.model
     if (options.permissionMode !== undefined) record.permissionMode = options.permissionMode
+    if (options.effort !== undefined) record.effort = options.effort
     await this.store.saveSession(record)
     await this.live.get(id)?.runtime?.update(options)
     this.publishSession(record)
@@ -264,6 +270,7 @@ export class AgentBridge {
           cwd: record.cwd,
           model: record.model,
           permissionMode: record.permissionMode,
+          effort: record.effort,
           resume: record.providerSessionId,
           meta: record.meta,
           emit: (event) => this.onAgentEvent(id, event),

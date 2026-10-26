@@ -8,12 +8,13 @@ const open = defineModel<boolean>('open', { default: false })
 
 const dialog = useTemplateRef('dialog')
 const listId = useId()
-const form = reactive({ agentId: '', cwd: '', model: '', permissionMode: '', prompt: '' })
+const form = reactive({ agentId: '', cwd: '', model: '', permissionMode: '', effort: '', prompt: '' })
 const agent = computed(() => props.agents.find((a) => a.id === form.agentId))
 
 function applyAgentDefaults() {
   form.model = agent.value?.defaultModel ?? agent.value?.models[0]?.id ?? ''
   form.permissionMode = agent.value?.defaultPermissionMode ?? agent.value?.permissionModes[0]?.id ?? ''
+  form.effort = agent.value?.defaultEffort ?? agent.value?.efforts[0]?.id ?? ''
 }
 
 function sync() {
@@ -37,6 +38,7 @@ function submit() {
     cwd: form.cwd.trim(),
     model: form.model || undefined,
     permissionMode: form.permissionMode || undefined,
+    effort: form.effort || undefined,
     prompt: form.prompt.trim() || undefined,
   })
   open.value = false
@@ -71,6 +73,12 @@ function submit() {
           <span>Permission mode</span>
           <select v-model="form.permissionMode">
             <option v-for="m in agent.permissionModes" :key="m.id" :value="m.id">{{ m.label }}</option>
+          </select>
+        </label>
+        <label v-if="agent?.efforts.length" class="awb-field">
+          <span>Effort</span>
+          <select v-model="form.effort">
+            <option v-for="m in agent.efforts" :key="m.id" :value="m.id">{{ m.label }}</option>
           </select>
         </label>
       </div>

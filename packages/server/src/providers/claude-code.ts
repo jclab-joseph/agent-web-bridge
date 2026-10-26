@@ -1,6 +1,7 @@
 import {
   query,
   type CanUseTool,
+  type EffortLevel,
   type Options,
   type PermissionMode,
   type PermissionResult,
@@ -29,7 +30,7 @@ import { AsyncQueue } from '../queue'
 /** Agent SDK options the provider lets the host set; the rest it manages itself. */
 export type ClaudeQueryOptions = Omit<
   Options,
-  'cwd' | 'model' | 'permissionMode' | 'resume' | 'sessionId' | 'canUseTool' | 'includePartialMessages'
+  'cwd' | 'model' | 'permissionMode' | 'effort' | 'resume' | 'sessionId' | 'canUseTool' | 'includePartialMessages'
 >
 
 /** The session an agent process is started for. */
@@ -71,11 +72,13 @@ export interface ClaudeCodeProviderOptions {
   ) => PermissionResult | undefined | Promise<PermissionResult | undefined>
   models?: SelectOption[]
   permissionModes?: SelectOption[]
+  efforts?: SelectOption[]
   /** Offer the `bypassPermissions` mode, in which the agent runs every tool without asking. */
   allowBypassPermissions?: boolean
 }
 
 const DEFAULT_MODEL = 'default'
+const DEFAULT_EFFORT = 'default'
 const MAX_TOOL_OUTPUT = 20_000
 const PARTIAL_FLUSH_MS = 80
 const ASK_USER_QUESTION = 'AskUserQuestion'
@@ -94,6 +97,15 @@ const PERMISSION_MODES: SelectOption[] = [
   { id: 'auto', label: 'Auto', description: 'A classifier approves routine actions and asks about the rest' },
 ]
 
+const EFFORTS: SelectOption[] = [
+  { id: DEFAULT_EFFORT, label: 'Default' },
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'Extra high' },
+  { id: 'max', label: 'Max' },
+]
+
 const BYPASS_MODE: SelectOption = { id: 'bypassPermissions', label: 'Bypass', description: 'Run every tool without asking' }
 
 export function createClaudeCodeProvider(options: ClaudeCodeProviderOptions = {}): AgentProvider {
@@ -104,8 +116,10 @@ export function createClaudeCodeProvider(options: ClaudeCodeProviderOptions = {}
       models: options.models ?? MODELS,
       permissionModes:
         options.permissionModes ?? (options.allowBypassPermissions ? [...PERMISSION_MODES, BYPASS_MODE] : PERMISSION_MODES),
+      efforts: options.efforts ?? EFFORTS,
       defaultModel: DEFAULT_MODEL,
       defaultPermissionMode: 'default',
+      defaultEffort: DEFAULT_EFFORT,
       supportsImages: true,
     },
     start: (startOptions) => ClaudeCodeRuntime.start(startOptions, options),
@@ -132,6 +146,7 @@ async function resolveQueryOptions(
     env,
     cwd: session.cwd,
     model: sdkModel(session.model),
+    effort: sdkEffort(session.effort),
     permissionMode: session.permissionMode as PermissionMode | undefined,
     allowDangerouslySkipPermissions: host.allowDangerouslySkipPermissions ?? provider.allowBypassPermissions,
     ...(session.resume ? { resume: session.resume } : { sessionId: session.sessionId }),
@@ -223,8 +238,10 @@ class ClaudeCodeRuntime implements AgentRuntime {
     await this.query.interrupt()
   }
 
-  async update(options: { model?: string; permissionMode?: string }) {
+  async update(options: { model?: string; permissionMode?: string; effort?: string }) {
     if (options.model !== undefined) await this.query.setModel(sdkModel(options.model))
+    // Session-scoped, like the CLI's /effort; null returns to the default level.
+    if (options.effort !== undefined) await this.query.applyFlagSettings({ effortLevel: sdkEffort(options.effort) ?? null })
     if (options.permissionMode !== undefined) {
       this.requestedMode = options.permissionMode
       await this.query.setPermissionMode(options.permissionMode as PermissionMode)
@@ -468,6 +485,10 @@ class ClaudeCodeRuntime implements AgentRuntime {
 
 function sdkModel(model: string | undefined): string | undefined {
   return model && model !== DEFAULT_MODEL ? model : undefined
+}
+
+function sdkEffort(effort: string | undefined): EffortLevel | undefined {
+  return effort && effort !== DEFAULT_EFFORT ? (effort as EffortLevel) : undefined
 }
 
 /** Reads AskUserQuestion input defensively; it comes from the model. */

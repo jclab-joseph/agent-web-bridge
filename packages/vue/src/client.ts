@@ -136,7 +136,7 @@ export function createAgentBridgeClient(options: AgentBridgeClientOptions) {
     send: (sessionId: string, text: string, images?: ImageAttachment[]) =>
       command({ type: 'session.send', sessionId, text, images: images?.length ? images : undefined }),
     interrupt: (sessionId: string) => command({ type: 'session.interrupt', sessionId }),
-    update: (sessionId: string, options: { model?: string; permissionMode?: string }) =>
+    update: (sessionId: string, options: { model?: string; permissionMode?: string; effort?: string }) =>
       command({ type: 'session.update', sessionId, ...options }),
     respondPermission: (sessionId: string, requestId: string, response: PermissionResponse) =>
       command({ type: 'session.permission', sessionId, requestId, ...response }),

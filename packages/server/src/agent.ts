@@ -22,6 +22,7 @@ export interface AgentStartOptions {
   cwd: string
   model?: string
   permissionMode?: string
+  effort?: string
   /** Provider session id reported by a previous runtime through `provider_session`. */
   resume?: string
   /** Server-side data the host attached when creating the session (never sent to clients). */
@@ -52,7 +53,7 @@ export interface UserInput {
 export interface AgentRuntime {
   send(input: UserInput): Promise<void>
   interrupt(): Promise<void>
-  update(options: { model?: string; permissionMode?: string }): Promise<void>
+  update(options: { model?: string; permissionMode?: string; effort?: string }): Promise<void>
   respondPermission(requestId: string, response: PermissionResponse): void
   /** Stops the process. The session stays resumable. */
   stop(): Promise<void>

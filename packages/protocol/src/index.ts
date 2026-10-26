@@ -25,8 +25,11 @@ export interface AgentInfo {
   name: string
   models: SelectOption[]
   permissionModes: SelectOption[]
+  /** Reasoning effort levels; empty when the agent has no such setting. */
+  efforts: SelectOption[]
   defaultModel?: string
   defaultPermissionMode?: string
+  defaultEffort?: string
   /** Whether user messages may carry images. */
   supportsImages?: boolean
 }
@@ -38,6 +41,7 @@ export interface SessionInfo {
   cwd: string
   model?: string
   permissionMode?: string
+  effort?: string
   status: SessionStatus
   createdAt: number
   lastActiveAt: number
@@ -132,6 +136,7 @@ export interface CreateSessionRequest {
   cwd: string
   model?: string
   permissionMode?: string
+  effort?: string
   prompt?: string
 }
 
@@ -140,7 +145,7 @@ export type ClientCommand =
   | ({ type: 'session.create' } & CreateSessionRequest)
   | { type: 'session.send'; sessionId: string; text: string; images?: ImageAttachment[] }
   | { type: 'session.interrupt'; sessionId: string }
-  | { type: 'session.update'; sessionId: string; model?: string; permissionMode?: string }
+  | { type: 'session.update'; sessionId: string; model?: string; permissionMode?: string; effort?: string }
   | ({ type: 'session.permission'; sessionId: string; requestId: string } & PermissionResponse)
   | { type: 'session.suspend'; sessionId: string }
   | { type: 'session.delete'; sessionId: string }

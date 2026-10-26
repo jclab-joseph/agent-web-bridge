@@ -10,7 +10,7 @@ const emit = defineEmits<{
   send: [text: string, images: ImageAttachment[]]
   interrupt: []
   permission: [requestId: string, response: PermissionResponse]
-  update: [options: { model?: string; permissionMode?: string }]
+  update: [options: { model?: string; permissionMode?: string; effort?: string }]
   suspend: []
   delete: []
 }>()
@@ -41,8 +41,10 @@ const busy = computed(() => ['busy', 'awaiting_permission'].includes(props.sessi
       :disabled="session.status === 'starting'"
       :model="session.model"
       :permission-mode="session.permissionMode"
+      :effort="session.effort"
       @update:model="(model) => emit('update', { model })"
       @update:permission-mode="(permissionMode) => emit('update', { permissionMode })"
+      @update:effort="(effort) => emit('update', { effort })"
       @send="(text, images) => emit('send', text, images)"
       @interrupt="emit('interrupt')"
     />

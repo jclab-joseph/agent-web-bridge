@@ -5,6 +5,7 @@ Run AI coding agents (currently Claude Code, through the Claude Agent SDK) on a 
 - Multiple concurrent sessions, each in its own working directory
 - Streamed replies rendered as markdown, tool calls, and tool permission prompts (allow / always allow / deny)
 - Permission modes Ask, Accept edits, Plan and Auto (a classifier approves routine actions and asks about the rest); Bypass only when the host enables it. Mode changes Claude Code makes itself, such as leaving plan mode, show up in the UI
+- Model and reasoning effort chosen per session and changeable while it runs
 - Questions from the agent (Claude's `AskUserQuestion`) answered in the UI; plans from plan mode shown for approval
 - Image attachments (button, paste, or drag and drop; downscaled in the browser)
 - Subagent transcripts nested under the tool call that started them
@@ -87,11 +88,12 @@ createClaudeCodeProvider({
     toolName === 'Bash' && String(input.command).includes('rm -rf') ? { behavior: 'deny', message: 'Not allowed' } : undefined,
   models: [/* … */],               // what clients may choose; the server rejects anything else
   permissionModes: [/* … */],
+  efforts: [/* … */],              // reasoning effort levels, e.g. low … max
   allowBypassPermissions: false,   // true offers the mode that runs every tool without asking
 })
 ```
 
-`meta` comes from the host, never from the client: `createFetchHandler(bridge, { sessionMeta: async (request) => ({ user: await getUser(request) }) })` stores it with each new session and hands it to `queryOptions` every time the session's process starts, so options can depend on who created the session. The cwd, model and permission mode are managed by the bridge; models and modes requested by clients are checked against `models` / `permissionModes`.
+`meta` comes from the host, never from the client: `createFetchHandler(bridge, { sessionMeta: async (request) => ({ user: await getUser(request) }) })` stores it with each new session and hands it to `queryOptions` every time the session's process starts, so options can depend on who created the session. The cwd, model, permission mode and effort are managed by the bridge; values requested by clients are checked against `models` / `permissionModes` / `efforts`.
 
 **Bundling:** the Agent SDK starts a native `claude` binary from a platform-specific optional package. Keep `@anthropic-ai/claude-agent-sdk` external and installed with optional dependencies; the sample sets `nitro.externals.trace: false` for this.
 
@@ -113,7 +115,7 @@ Implement [`SessionStore`](packages/server/src/store.ts) (6 methods) for your da
 
 ### Adding another agent
 
-Implement [`AgentProvider`](packages/server/src/agent.ts): `info` describes the agent (models, permission modes), and `start()` returns an `AgentRuntime` that emits `message`, `status`, `provider_session` and `exit` events. The [Claude Code provider](packages/server/src/providers/claude-code.ts) is the reference.
+Implement [`AgentProvider`](packages/server/src/agent.ts): `info` describes the agent (models, permission modes, effort levels), and `start()` returns an `AgentRuntime` that emits `message`, `status`, `provider_session` and `exit` events. The [Claude Code provider](packages/server/src/providers/claude-code.ts) is the reference.
 
 ## Vue
 

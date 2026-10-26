@@ -7,6 +7,7 @@ const props = defineProps<{ agent?: AgentInfo; busy?: boolean; suspended?: boole
 const emit = defineEmits<{ send: [text: string, images: ImageAttachment[]]; interrupt: [] }>()
 const model = defineModel<string>('model')
 const permissionMode = defineModel<string>('permissionMode')
+const effort = defineModel<string>('effort')
 
 const text = ref('')
 const images = ref<ImageAttachment[]>([])
@@ -121,6 +122,12 @@ function onPick(event: Event) {
         <span>Model</span>
         <select v-model="model" :disabled="disabled">
           <option v-for="option in agent.models" :key="option.id" :value="option.id">{{ option.label }}</option>
+        </select>
+      </label>
+      <label v-if="agent?.efforts.length" class="awb-composer__select">
+        <span>Effort</span>
+        <select v-model="effort" :disabled="disabled">
+          <option v-for="option in agent.efforts" :key="option.id" :value="option.id">{{ option.label }}</option>
         </select>
       </label>
       <span class="awb-composer__spacer" />
