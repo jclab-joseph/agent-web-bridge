@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   ClientCommand,
   CreateSessionRequest,
+  FileAttachment,
   ImageAttachment,
   PermissionResponse,
   ServerEvent,
@@ -133,8 +134,25 @@ export function createAgentBridgeClient(options: AgentBridgeClientOptions) {
       upsertSession(session)
       return session
     },
-    send: (sessionId: string, text: string, images?: ImageAttachment[]) =>
-      command({ type: 'session.send', sessionId, text, images: images?.length ? images : undefined }),
+    send: (sessionId: string, text: string, images?: ImageAttachment[], files?: FileAttachment[]) =>
+      command({
+        type: 'session.send',
+        sessionId,
+        text,
+        images: images?.length ? images : undefined,
+        files: files?.length ? files.map(({ id }) => ({ id })) : undefined,
+      }),
+    /** Uploads a file of any type to the session; attach the result to a message with `send`. */
+    async upload(sessionId: string, file: File, init?: { signal?: AbortSignal }): Promise<FileAttachment> {
+      const path = `/sessions/${encodeURIComponent(sessionId)}/files?name=${encodeURIComponent(file.name)}`
+      const { file: uploaded } = await request<{ file: FileAttachment }>(path, {
+        method: 'POST',
+        body: file,
+        headers: { 'content-type': 'application/octet-stream' },
+        signal: init?.signal,
+      })
+      return uploaded
+    },
     interrupt: (sessionId: string) => command({ type: 'session.interrupt', sessionId }),
     update: (sessionId: string, options: { model?: string; permissionMode?: string; effort?: string }) =>
       command({ type: 'session.update', sessionId, ...options }),

@@ -8,6 +8,7 @@ Run AI coding agents (currently Claude Code, through the Claude Agent SDK) on a 
 - Model and reasoning effort chosen per session and changeable while it runs
 - Questions from the agent (Claude's `AskUserQuestion`) answered in the UI; plans from plan mode shown for approval
 - Image attachments (button, paste, or drag and drop; downscaled in the browser)
+- File attachments of any type, uploaded to a scratch directory the host chooses (`uploadDir`); the agent gets their paths
 - Subagent transcripts nested under the tool call that started them
 - Idle sessions are suspended after a TTL (default 5 minutes) and resumed with their context on the next message
 - Pluggable storage (`SessionStore`) and pluggable agents (`AgentProvider`)
@@ -38,6 +39,8 @@ Configuration (environment variables):
 | `NUXT_AGENT_BRIDGE_ALLOWED_ROOTS` | your home directory (comma-separated list) |
 | `NUXT_AGENT_BRIDGE_SESSION_TTL_MS` | `300000` |
 | `NUXT_AGENT_BRIDGE_DB_PATH` | `.data/agent-web-bridge.db` |
+| `NUXT_AGENT_BRIDGE_UPLOAD_DIR` | `.data/uploads`; scratch directory for uploaded files, empty turns file uploads off |
+| `NUXT_AGENT_BRIDGE_MAX_UPLOAD_BYTES` | `104857600` (100 MB) |
 | `NUXT_AGENT_BRIDGE_ALLOWED_TOOLS` | none; Claude Code permission rules run without asking, e.g. `Write,Bash(npm test:*)` |
 | `NUXT_AGENT_BRIDGE_DISALLOWED_TOOLS` | none; tools removed from the agent |
 | `NUXT_PUBLIC_AGENT_BRIDGE_DEFAULT_CWD` | your home directory |
@@ -53,6 +56,8 @@ const bridge = new AgentBridge({
   store: myStore,                 // optional, defaults to MemorySessionStore
   sessionTtlMs: 5 * 60 * 1000,    // optional
   allowedRoots: ['/srv/projects'], // optional, restricts session working directories
+  uploadDir: '/var/lib/my-app/uploads', // optional, enables file uploads (see below)
+  maxUploadBytes: 100 * 1024 * 1024,    // optional, per file
 })
 
 // Fetch API (Hono, Bun, Next route handlers, ...): returns undefined for paths it does not own
@@ -97,13 +102,30 @@ createClaudeCodeProvider({
 
 **Bundling:** the Agent SDK starts a native `claude` binary from a platform-specific optional package. Keep `@anthropic-ai/claude-agent-sdk` external and installed with optional dependencies; the sample sets `nitro.externals.trace: false` for this.
 
+### File uploads
+
+Images travel inline with a message. Other files are uploaded first and attached by id: with `uploadDir` set (and an agent whose `info.supportsFiles` is true, like Claude Code), `POST {base}/sessions/:id/files?name=<file name>` streams the raw body to `<uploadDir>/<session id>/<file name>` and answers `{ file: { id, name, size } }`. Paths stay short, since the agent reads them (and they cost tokens). A name the session already has gets a suffix before the extension (`report-1.pdf`, `report-2.pdf`, ...); the stored name is the file's `id`. `session.send` then takes `files: [{ id }]`; the server checks that the id is a plain file name in the session's directory and reads the size from disk, so clients cannot point a message at other paths.
+
+Each session's directory is passed to the provider as `uploadDir`; the Claude Code provider sets it as `AGENT_UPLOAD_DIR` in the agent's environment, adds it to `additionalDirectories` and `echo $AGENT_UPLOAD_DIR` to `allowedTools` (both merged with the host's lists, so the agent finds and reads the files without asking) and appends the files to the message as `$AGENT_UPLOAD_DIR/<name>` rather than as full paths. The directory is created when the agent starts and removed when the session is deleted. Without `uploadDir`, agents report `supportsFiles: false` and the composer only takes images.
+
+On the client, pass an `upload` function to `AgentChat` (or `Composer`) to enable the file picker for all types:
+
+```vue
+<AgentChat
+  :upload="(file, signal) => bridge.upload(session.id, file, { signal })"
+  @send="(text, images, files) => bridge.send(session.id, text, images, files)"
+  …
+/>
+```
+
 ### Routes
 
 | | |
 |---|---|
 | `GET {base}/events` | Server-sent events: `hello` (agents, sessions, server time) on every connect, then `session.updated`, `session.deleted`, `message.upsert` |
 | `GET {base}/sessions/:id/messages` | Transcript of a session |
-| `POST {base}/commands` | A `ClientCommand`: `session.create`, `send` (text and images), `interrupt`, `update`, `permission` (decision and question answers), `suspend`, `delete`. Bodies over `maxBodyBytes` (30 MB) are rejected |
+| `POST {base}/sessions/:id/files?name=` | Uploads one file (raw body); responds `{ file }`. Bodies over `maxUploadBytes` (100 MB) are rejected |
+| `POST {base}/commands` | A `ClientCommand`: `session.create`, `send` (text, images and uploaded files), `interrupt`, `update`, `permission` (decision and question answers), `suspend`, `delete`. Bodies over `maxBodyBytes` (30 MB) are rejected |
 
 ### Session lifecycle
 
@@ -146,5 +168,6 @@ pnpm -r --filter "./packages/*" --filter "!simple-sample" publish --access publi
 ## Known limits
 
 - Transcripts store attached images inline (base64), which makes transcripts with many images large.
+- Uploaded files stay on disk until their session is deleted, including files removed from the composer before sending.
 - Every connected client sees every session; scope sessions per user in your host if you need that.
 - Claude Code may run subagents in the background: the tool call returns at once and the subagent's messages arrive later.

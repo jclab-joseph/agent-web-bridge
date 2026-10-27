@@ -1,6 +1,7 @@
 import type {
   AgentInfo,
   ChatMessage,
+  FileAttachment,
   ImageAttachment,
   PermissionResponse,
   SessionStatus,
@@ -25,6 +26,11 @@ export interface AgentStartOptions {
   effort?: string
   /** Provider session id reported by a previous runtime through `provider_session`. */
   resume?: string
+  /**
+   * Directory holding this session's uploaded files, when the bridge has an `uploadDir`.
+   * It exists when the runtime starts; the agent should be allowed to read it.
+   */
+  uploadDir?: string
   /** Server-side data the host attached when creating the session (never sent to clients). */
   meta?: Record<string, unknown>
   emit(event: AgentEvent): void
@@ -47,6 +53,13 @@ export type AgentEvent =
 export interface UserInput {
   text: string
   images?: ImageAttachment[]
+  files?: UploadedFile[]
+}
+
+/** An uploaded file as the agent sees it. */
+export interface UploadedFile extends FileAttachment {
+  /** Absolute path on the server. */
+  path: string
 }
 
 /** A live agent process for one session. */

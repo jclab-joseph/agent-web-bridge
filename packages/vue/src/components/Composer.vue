@@ -1,22 +1,37 @@
 <script setup lang="ts">
-import type { AgentInfo, ImageAttachment } from '@agent-web-bridge/protocol'
+import type { AgentInfo, FileAttachment, ImageAttachment } from '@agent-web-bridge/protocol'
 import { computed, ref, useTemplateRef } from 'vue'
-import { imageDataUrl, readImage } from '../images'
+import { imageDataUrl, isInlineImage, readImage } from '../images'
+import { formatBytes } from '../utils'
 
-const props = defineProps<{ agent?: AgentInfo; busy?: boolean; suspended?: boolean; disabled?: boolean }>()
-const emit = defineEmits<{ send: [text: string, images: ImageAttachment[]]; interrupt: [] }>()
+const props = defineProps<{
+  agent?: AgentInfo
+  busy?: boolean
+  suspended?: boolean
+  disabled?: boolean
+  /** Uploads a non-image file (e.g. `client.upload`); files can be attached only when it is given. */
+  upload?: (file: File, signal: AbortSignal) => Promise<FileAttachment>
+}>()
+const emit = defineEmits<{ send: [text: string, images: ImageAttachment[], files: FileAttachment[]]; interrupt: [] }>()
 const model = defineModel<string>('model')
 const permissionMode = defineModel<string>('permissionMode')
 const effort = defineModel<string>('effort')
 
 const text = ref('')
 const images = ref<ImageAttachment[]>([])
-const imageError = ref<string>()
+/** Files being uploaded (`uploaded` unset) or uploaded. */
+const files = ref<{ name: string; size: number; uploaded?: FileAttachment; abort: AbortController }[]>([])
+const attachError = ref<string>()
 const dragging = ref(false)
 const fileInput = useTemplateRef('fileInput')
 
-const canAttach = computed(() => !!props.agent?.supportsImages)
-const canSend = computed(() => !props.disabled && (!!text.value.trim() || images.value.length > 0))
+const canAttachImages = computed(() => !!props.agent?.supportsImages)
+const canAttachFiles = computed(() => !!props.agent?.supportsFiles && !!props.upload)
+const canAttach = computed(() => canAttachImages.value || canAttachFiles.value)
+const uploading = computed(() => files.value.some((f) => !f.uploaded))
+const canSend = computed(
+  () => !props.disabled && !uploading.value && (!!text.value.trim() || images.value.length > 0 || files.value.length > 0),
+)
 const placeholder = computed(() => {
   if (props.suspended) return 'Send a message to resume this session'
   if (props.busy) return 'Agent is working — your message will be queued'
@@ -25,9 +40,10 @@ const placeholder = computed(() => {
 
 function submit() {
   if (!canSend.value) return
-  emit('send', text.value.trim(), images.value)
+  emit('send', text.value.trim(), images.value, files.value.map((f) => f.uploaded!))
   text.value = ''
   images.value = []
+  files.value = []
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -38,24 +54,58 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
-async function addFiles(files: Iterable<File>) {
+/** Images go inline with the message; other files (and images the agent cannot take inline) are uploaded. */
+function accepts(file: File): boolean {
+  return canAttachFiles.value || (canAttachImages.value && isInlineImage(file))
+}
+
+async function addFiles(list: Iterable<File>) {
   if (!canAttach.value) return
-  imageError.value = undefined
-  for (const file of files) {
-    if (!file.type.startsWith('image/')) continue
-    try {
-      images.value.push(await readImage(file))
-    } catch (error) {
-      imageError.value = error instanceof Error ? error.message : String(error)
+  attachError.value = undefined
+  for (const file of list) {
+    if (!accepts(file)) {
+      attachError.value = `Cannot attach ${file.name}: only images are accepted`
+    } else if (canAttachImages.value && isInlineImage(file)) {
+      try {
+        images.value.push(await readImage(file))
+      } catch (error) {
+        attachError.value = errorText(error)
+      }
+    } else {
+      void uploadFile(file)
     }
   }
 }
 
+async function uploadFile(file: File) {
+  const entry = { name: file.name, size: file.size, uploaded: undefined as FileAttachment | undefined, abort: new AbortController() }
+  files.value.push(entry)
+  try {
+    const uploaded = await props.upload!(file, entry.abort.signal)
+    // Look the entry up again: it may have been removed meanwhile, and the stored one is the reactive proxy.
+    const current = files.value.find((f) => f.abort === entry.abort)
+    if (current) current.uploaded = uploaded
+  } catch (error) {
+    if (entry.abort.signal.aborted) return
+    files.value = files.value.filter((f) => f.abort !== entry.abort)
+    attachError.value = `${file.name}: ${errorText(error)}`
+  }
+}
+
+function removeFile(index: number) {
+  const [removed] = files.value.splice(index, 1)
+  removed?.abort.abort()
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 function onPaste(event: ClipboardEvent) {
-  const files = [...(event.clipboardData?.files ?? [])]
-  if (canAttach.value && files.some((f) => f.type.startsWith('image/'))) {
+  const pasted = [...(event.clipboardData?.files ?? [])]
+  if (pasted.some(accepts)) {
     event.preventDefault()
-    void addFiles(files)
+    void addFiles(pasted)
   }
 }
 
@@ -81,12 +131,23 @@ function onPick(event: Event) {
     @drop.prevent="onDrop"
   >
     <div class="awb-composer__box">
-      <div v-if="images.length || imageError" class="awb-composer__attachments">
+      <div v-if="images.length || files.length || attachError" class="awb-composer__attachments">
         <div v-for="(image, index) in images" :key="index" class="awb-composer__thumb">
           <img :src="imageDataUrl(image)" alt="Attachment" />
           <button type="button" aria-label="Remove image" @click="images.splice(index, 1)">✕</button>
         </div>
-        <span v-if="imageError" class="awb-composer__error">{{ imageError }}</span>
+        <div
+          v-for="(file, index) in files"
+          :key="`file-${index}`"
+          class="awb-composer__file"
+          :class="{ 'is-uploading': !file.uploaded }"
+          :title="file.name"
+        >
+          <span class="awb-composer__file-name">{{ file.name }}</span>
+          <span class="awb-composer__file-size">{{ file.uploaded ? formatBytes(file.size) : 'Uploading…' }}</span>
+          <button type="button" aria-label="Remove file" @click="removeFile(index)">✕</button>
+        </div>
+        <span v-if="attachError" class="awb-composer__error">{{ attachError }}</span>
       </div>
       <textarea
         v-model="text"
@@ -100,13 +161,19 @@ function onPick(event: Event) {
     </div>
     <div class="awb-composer__bar">
       <template v-if="canAttach">
-        <button type="button" class="awb-btn awb-btn--icon" aria-label="Attach images" title="Attach images" @click="fileInput?.click()">
+        <button
+          type="button"
+          class="awb-btn awb-btn--icon"
+          :aria-label="canAttachFiles ? 'Attach files' : 'Attach images'"
+          :title="canAttachFiles ? 'Attach files' : 'Attach images'"
+          @click="fileInput?.click()"
+        >
           +
         </button>
         <input
           ref="fileInput"
           type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp"
+          :accept="canAttachFiles ? undefined : 'image/png,image/jpeg,image/gif,image/webp'"
           multiple
           hidden
           @change="onPick"

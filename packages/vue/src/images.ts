@@ -6,6 +6,11 @@ const MAX_EDGE = 1568
 /** Stays below the 5 MB per-image API limit. */
 const MAX_BYTES = 4 * 1024 * 1024
 
+/** Whether `readImage` accepts the file, i.e. it is an image type agents take inline. */
+export function isInlineImage(file: Blob): boolean {
+  return TYPES.has(file.type)
+}
+
 export function imageDataUrl(image: ImageAttachment): string {
   return `data:${image.mediaType};base64,${image.data}`
 }

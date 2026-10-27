@@ -5,6 +5,7 @@ import {
   SessionList,
   useAgentBridge,
   type CreateSessionRequest,
+  type FileAttachment,
   type ImageAttachment,
   type PermissionResponse,
 } from '@agent-web-bridge/vue'
@@ -58,7 +59,9 @@ function remove(id: string) {
 
 // Handlers for the active session.
 const on = {
-  send: (text: string, images: ImageAttachment[]) => run(() => bridge.send(activeId.value!, text, images)),
+  send: (text: string, images: ImageAttachment[], files: FileAttachment[]) =>
+    run(() => bridge.send(activeId.value!, text, images, files)),
+  upload: (file: File, signal: AbortSignal) => bridge.upload(activeId.value!, file, { signal }),
   interrupt: () => run(() => bridge.interrupt(activeId.value!)),
   permission: (requestId: string, response: PermissionResponse) =>
     run(() => bridge.respondPermission(activeId.value!, requestId, response)),
@@ -98,6 +101,7 @@ const on = {
         :session="active"
         :agent="activeAgent"
         :messages="state.messages[active.id] ?? []"
+        :upload="on.upload"
         @send="on.send"
         @interrupt="on.interrupt"
         @permission="on.permission"

@@ -13,10 +13,13 @@ export default defineNuxtConfig({
     // dependency tracing does not find, so resolve dependencies from node_modules at runtime.
     externals: { trace: false },
   },
-  // Override with NUXT_AGENT_BRIDGE_DB_PATH, NUXT_AGENT_BRIDGE_ALLOWED_ROOTS (comma-separated), ...
+  // Override with NUXT_AGENT_BRIDGE_DB_PATH, NUXT_AGENT_BRIDGE_ALLOWED_ROOTS (comma-separated), NUXT_AGENT_BRIDGE_UPLOAD_DIR, ...
   runtimeConfig: {
     agentBridge: {
       dbPath: '.data/agent-web-bridge.db',
+      // Scratch directory for uploaded files; empty turns file uploads off (images still work).
+      uploadDir: '.data/uploads',
+      maxUploadBytes: 100 * 1024 * 1024,
       allowedRoots: '',
       sessionTtlMs: 5 * 60 * 1000,
       // Claude Code permission rules, e.g. "Bash(npm test:*),Read"; comma-separated.

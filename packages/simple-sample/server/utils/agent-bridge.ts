@@ -25,6 +25,8 @@ export function getAgentBridge(): AgentBridge {
       store: new SqliteSessionStore(config.dbPath),
       sessionTtlMs: Number(config.sessionTtlMs),
       allowedRoots,
+      uploadDir: config.uploadDir || undefined,
+      maxUploadBytes: Number(config.maxUploadBytes),
     })
   }
   return globalState.__agentBridge

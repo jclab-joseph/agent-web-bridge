@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { Readable } from 'node:stream'
 import type { ClientCommand, ServerEvent } from '@agent-web-bridge/protocol'
 import { BridgeError, errorMessage, type AgentBridge } from './bridge'
 
@@ -7,7 +8,7 @@ export interface HandlerOptions {
   basePath?: string
   /** Interval for SSE keep-alive comments. */
   keepAliveMs?: number
-  /** Largest accepted command body; messages with images are the big ones. Default 30 MB. */
+  /** Largest accepted command body; messages with images are the big ones. Default 30 MB. File uploads have their own limit, `BridgeOptions.maxUploadBytes`. */
   maxBodyBytes?: number
   /**
    * Server-side data to store with a session created by this request, e.g. the
@@ -24,6 +25,7 @@ const DEFAULT_MAX_BODY_BYTES = 30 * 1024 * 1024
  * - `GET  /events`                  Server-sent events: `hello`, then every {@link ServerEvent}
  * - `GET  /sessions/:id/messages`   Transcript of one session
  * - `POST /commands`                A {@link ClientCommand}; responds `{ session }` for `session.create`
+ * - `POST /sessions/:id/files?name=` Raw file body; responds `{ file }` to attach with `session.send`
  *
  * Authentication is up to the host: put this behind your own middleware.
  * Returns `undefined` for paths it does not own.
@@ -46,10 +48,18 @@ export function createFetchHandler(bridge: AgentBridge, options: HandlerOptions 
         return Response.json(await bridge.listMessages(decodeURIComponent(messages[1]!)))
       }
 
+      const files = path.match(/^\/sessions\/([^/]+)\/files$/)
+      if (request.method === 'POST' && files) {
+        if (Number(request.headers.get('content-length')) > bridge.maxUploadBytes) {
+          throw new BridgeError(413, 'File is too large')
+        }
+        const name = url.searchParams.get('name') ?? ''
+        const file = await bridge.uploadFile(decodeURIComponent(files[1]!), name, chunks(request))
+        return Response.json({ file })
+      }
+
       if (request.method === 'POST' && path === '/commands') {
-        if (Number(request.headers.get('content-length')) > maxBodyBytes) throw new BridgeError(413, 'Request too large')
-        const body = await request.text()
-        if (body.length > maxBodyBytes) throw new BridgeError(413, 'Request too large')
+        const body = await readText(request, maxBodyBytes)
         const command = parseJson(body) as ClientCommand | undefined
         if (!command || typeof command.type !== 'string') throw new BridgeError(400, 'Invalid command')
         const meta = command.type === 'session.create' ? await options.sessionMeta?.(request) : undefined
@@ -62,6 +72,29 @@ export function createFetchHandler(bridge: AgentBridge, options: HandlerOptions 
       return Response.json({ error: errorMessage(error) }, { status })
     }
   }
+}
+
+async function* chunks(request: Request): AsyncIterable<Uint8Array> {
+  if (!request.body) return
+  const reader = request.body.getReader()
+  try {
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) yield chunk.value
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+/** Reads the body as text, failing as soon as it passes `limit` bytes. */
+async function readText(request: Request, limit: number): Promise<string> {
+  if (Number(request.headers.get('content-length')) > limit) throw new BridgeError(413, 'Request too large')
+  const parts: Uint8Array[] = []
+  let size = 0
+  for await (const chunk of chunks(request)) {
+    size += chunk.byteLength
+    if (size > limit) throw new BridgeError(413, 'Request too large')
+    parts.push(chunk)
+  }
+  return Buffer.concat(parts).toString('utf8')
 }
 
 function parseJson(text: string): unknown {
@@ -132,18 +165,23 @@ export function createNodeHandler(bridge: AgentBridge, options: HandlerOptions =
     res.on('close', () => controller.abort())
     try {
       const url = new URL(req.originalUrl ?? req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
-      const body = req.method === 'POST' ? await readBody(req, options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES) : undefined
+      // Streamed, so uploads are written to disk as they arrive; the fetch handler enforces the size limits.
+      const body = req.method === 'POST' ? (Readable.toWeb(req) as ReadableStream<Uint8Array>) : undefined
       const response = await handle(
         new Request(url, {
           method: req.method,
           headers: req.headers as Record<string, string>,
           body,
+          duplex: 'half',
           signal: controller.signal,
-        }),
+        } as RequestInit),
       )
       if (!response) return next ? next() : res.writeHead(404).end()
 
-      res.writeHead(response.status, Object.fromEntries(response.headers))
+      const headers = Object.fromEntries(response.headers)
+      // The rest of a body left unread (a rejected upload) would be taken for the next request on this connection.
+      if (body && !req.complete) headers.connection = 'close'
+      res.writeHead(response.status, headers)
       if (!response.body) return res.end()
       const reader = response.body.getReader()
       for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) res.write(chunk.value)
@@ -161,16 +199,4 @@ declare module 'node:http' {
     /** Set by express when the handler is mounted under a path. */
     originalUrl?: string
   }
-}
-
-/** Reads at most `limit` bytes plus one, so the fetch handler can reject oversized bodies. */
-async function readBody(req: IncomingMessage, limit: number): Promise<string> {
-  const chunks: Buffer[] = []
-  let size = 0
-  for await (const chunk of req) {
-    chunks.push(chunk as Buffer)
-    size += (chunk as Buffer).length
-    if (size > limit) break
-  }
-  return Buffer.concat(chunks).toString('utf8')
 }

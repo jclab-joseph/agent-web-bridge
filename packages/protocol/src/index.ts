@@ -32,6 +32,8 @@ export interface AgentInfo {
   defaultEffort?: string
   /** Whether user messages may carry images. */
   supportsImages?: boolean
+  /** Whether user messages may carry uploaded files (needs the bridge's `uploadDir`). */
+  supportsFiles?: boolean
 }
 
 export interface SessionInfo {
@@ -57,6 +59,16 @@ export interface ImageAttachment {
   mediaType: ImageMediaType
   /** Base64 without the `data:` prefix. */
   data: string
+}
+
+/** A file uploaded through `POST {base}/sessions/:id/files`, attached to a message by id. */
+export interface FileAttachment {
+  /** Name the file is stored under in the session's upload directory, unique within the session. */
+  id: string
+  /** Same as `id`: the client's file name, with `-1`, `-2`, ... added when the session already had it. */
+  name: string
+  /** Size in bytes. */
+  size: number
 }
 
 /** A multiple-choice question the agent asks the user (Claude's AskUserQuestion). */
@@ -102,6 +114,7 @@ export interface UserMessage extends BaseMessage {
   kind: 'user'
   text: string
   images?: ImageAttachment[]
+  files?: FileAttachment[]
 }
 
 export interface AssistantMessage extends BaseMessage {
@@ -143,7 +156,14 @@ export interface CreateSessionRequest {
 /** Client → server. */
 export type ClientCommand =
   | ({ type: 'session.create' } & CreateSessionRequest)
-  | { type: 'session.send'; sessionId: string; text: string; images?: ImageAttachment[] }
+  | {
+      type: 'session.send'
+      sessionId: string
+      text: string
+      images?: ImageAttachment[]
+      /** Uploaded files; only `id` is read, the server looks up the rest. */
+      files?: Pick<FileAttachment, 'id'>[]
+    }
   | { type: 'session.interrupt'; sessionId: string }
   | { type: 'session.update'; sessionId: string; model?: string; permissionMode?: string; effort?: string }
   | ({ type: 'session.permission'; sessionId: string; requestId: string } & PermissionResponse)

@@ -13,6 +13,12 @@ export function shortPath(path: string): string {
   return path.replace(/^\/(?:home|Users)\/[^/]+/, '~')
 }
 
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 /** Formats a duration as m:ss. */
 export function formatDuration(ms: number): string {
   const total = Math.max(0, Math.ceil(ms / 1000))

@@ -2,6 +2,7 @@
 import type { ChatMessage } from '@agent-web-bridge/protocol'
 import { ref } from 'vue'
 import { imageDataUrl } from '../images'
+import { formatBytes } from '../utils'
 import MarkdownText from './MarkdownText.vue'
 import ToolCallCard from './ToolCallCard.vue'
 
@@ -25,6 +26,12 @@ const zoomed = ref<number>()
           <img :src="imageDataUrl(image)" alt="Attached image" />
         </button>
       </div>
+      <ul v-if="message.files?.length" class="awb-msg__files">
+        <li v-for="file in message.files" :key="file.id" :title="file.name">
+          <span class="awb-msg__file-name">{{ file.name }}</span>
+          <span class="awb-msg__file-size">{{ formatBytes(file.size) }}</span>
+        </li>
+      </ul>
       <template v-if="message.text">{{ message.text }}</template>
     </div>
   </div>

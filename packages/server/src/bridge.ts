@@ -1,18 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import { stat } from 'node:fs/promises'
-import { basename, isAbsolute, relative, resolve } from 'node:path'
+import { mkdir, open, rm, stat, type FileHandle } from 'node:fs/promises'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import type {
   AgentInfo,
   ChatMessage,
   ClientCommand,
   CreateSessionRequest,
+  FileAttachment,
   ImageAttachment,
   PermissionResponse,
   ServerEvent,
   SessionInfo,
   SessionStatus,
 } from '@agent-web-bridge/protocol'
-import type { AgentEvent, AgentProvider, AgentRuntime, UserInput } from './agent'
+import type { AgentEvent, AgentProvider, AgentRuntime, UploadedFile, UserInput } from './agent'
 import { MemorySessionStore, type SessionRecord, type SessionStore } from './store'
 
 export const DEFAULT_SESSION_TTL_MS = 5 * 60 * 1000
@@ -21,6 +22,8 @@ const IMAGE_TYPES = new Set<string>(['image/png', 'image/jpeg', 'image/gif', 'im
 const MAX_IMAGES = 10
 /** Decoded size limit per image (the Claude API limit). */
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const MAX_FILES = 20
+export const DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 export interface BridgeOptions {
   providers: AgentProvider[]
@@ -30,6 +33,21 @@ export interface BridgeOptions {
   sessionTtlMs?: number
   /** When set, session working directories must be inside one of these directories. */
   allowedRoots?: string[]
+  /**
+   * Scratch directory for files users upload (any kind, not only images). Each session
+   * gets its own subdirectory, which its agent may read and which is removed with the
+   * session. File uploads are off when this is not set.
+   */
+  uploadDir?: string
+  /** Largest accepted upload, in bytes. Default 100 MB. */
+  maxUploadBytes?: number
+}
+
+/** A message from a client; files are uploaded beforehand and referenced by id. */
+export interface SendInput {
+  text: string
+  images?: ImageAttachment[]
+  files?: Pick<FileAttachment, 'id'>[]
 }
 
 /** Server-side context for a command, supplied by the host (see `HandlerOptions.sessionMeta`). */
@@ -69,16 +87,20 @@ export class AgentBridge {
   private listeners = new Set<(event: ServerEvent) => void>()
   private ttlMs: number
   private allowedRoots?: string[]
+  private uploadDir?: string
+  readonly maxUploadBytes: number
 
   constructor(options: BridgeOptions) {
     for (const provider of options.providers) this.providers.set(provider.info.id, provider)
     this.store = options.store ?? new MemorySessionStore()
     this.ttlMs = options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS
     this.allowedRoots = options.allowedRoots?.map((root) => resolve(root))
+    this.uploadDir = options.uploadDir ? resolve(options.uploadDir) : undefined
+    this.maxUploadBytes = options.maxUploadBytes ?? DEFAULT_MAX_UPLOAD_BYTES
   }
 
   get agents(): AgentInfo[] {
-    return [...this.providers.values()].map((p) => p.info)
+    return [...this.providers.values()].map((p) => ({ ...p.info, supportsFiles: this.acceptsFiles(p) }))
   }
 
   subscribe(listener: (event: ServerEvent) => void): () => void {
@@ -108,7 +130,7 @@ export class AgentBridge {
         return this.create(request, context)
       }
       case 'session.send':
-        return this.send(command.sessionId, { text: command.text, images: command.images })
+        return this.send(command.sessionId, { text: command.text, images: command.images, files: command.files })
       case 'session.interrupt':
         return this.interrupt(command.sessionId)
       case 'session.update': {
@@ -157,22 +179,56 @@ export class AgentBridge {
     return this.toInfo(record)
   }
 
-  async send(id: string, input: UserInput): Promise<void> {
+  async send(id: string, input: SendInput): Promise<void> {
     const record = await this.record(id)
     const text = input.text?.trim() ?? ''
     const images = input.images?.length ? input.images : undefined
-    if (!text && !images) throw new BridgeError(400, 'Message is empty')
+    if (!text && !images && !input.files?.length) throw new BridgeError(400, 'Message is empty')
     if (images) checkImages(images, this.provider(record.agentId).info.supportsImages)
+    const files = input.files?.length ? await this.resolveFiles(record, input.files) : undefined
 
     const now = Date.now()
     record.lastActiveAt = now
-    if (!record.title) record.title = text ? titleFrom(text) : 'Image'
+    if (!record.title) record.title = text ? titleFrom(text) : images ? 'Image' : titleFrom(files![0]!.name)
     await this.store.saveSession(record)
-    await this.addMessage(id, { id: randomUUID(), kind: 'user', createdAt: now, text, images })
+    // Clients see the files without their server paths.
+    const attachments = files?.map(({ path: _, ...file }) => file)
+    await this.addMessage(id, { id: randomUUID(), kind: 'user', createdAt: now, text, images, files: attachments })
 
     const runtime = await this.ensureRuntime(id)
     this.setStatus(id, 'busy')
-    await runtime.send({ text, images })
+    await runtime.send({ text, images, files } satisfies UserInput)
+  }
+
+  /**
+   * Saves a file as `<uploadDir>/<session id>/<name>`, so a following `send` can attach it.
+   * A name already taken in the session gets a suffix (`report-1.pdf`, `report-2.pdf`, ...);
+   * the stored name is the file's id. `data` is read to the end, or until it passes `maxUploadBytes`.
+   */
+  async uploadFile(id: string, name: string, data: AsyncIterable<Uint8Array>): Promise<FileAttachment> {
+    const record = await this.record(id)
+    const dir = this.sessionUploadDir(record)
+    await mkdir(dir, { recursive: true })
+    const { handle, name: stored } = await createUnique(dir, safeFileName(name))
+    const path = join(dir, stored)
+    let size = 0
+    try {
+      try {
+        for await (const chunk of data) {
+          size += chunk.byteLength
+          if (size > this.maxUploadBytes) {
+            throw new BridgeError(413, `File is larger than ${formatSize(this.maxUploadBytes)}`)
+          }
+          await handle.write(chunk)
+        }
+      } finally {
+        await handle.close()
+      }
+    } catch (error) {
+      await rm(path, { force: true })
+      throw error
+    }
+    return { id: stored, name: stored, size }
   }
 
   async interrupt(id: string): Promise<void> {
@@ -218,6 +274,7 @@ export class AgentBridge {
     await this.suspend(id)
     this.live.delete(id)
     await this.store.deleteSession(id)
+    if (this.uploadDir) await rm(join(this.uploadDir, id), { recursive: true, force: true })
     this.publish({ type: 'session.deleted', sessionId: id })
   }
 
@@ -230,6 +287,31 @@ export class AgentBridge {
     const provider = this.providers.get(agentId)
     if (!provider) throw new BridgeError(400, `Unknown agent: ${agentId}`)
     return provider
+  }
+
+  private acceptsFiles(provider: AgentProvider): boolean {
+    return !!this.uploadDir && !!provider.info.supportsFiles
+  }
+
+  private sessionUploadDir(record: SessionRecord): string {
+    if (!this.acceptsFiles(this.provider(record.agentId))) throw new BridgeError(400, 'This agent does not accept files')
+    return join(this.uploadDir!, record.id)
+  }
+
+  /** Looks up files uploaded to the session; their name and size are taken from disk, not from the client. */
+  private async resolveFiles(record: SessionRecord, files: Pick<FileAttachment, 'id'>[]): Promise<UploadedFile[]> {
+    const dir = this.sessionUploadDir(record)
+    if (files.length > MAX_FILES) throw new BridgeError(400, `At most ${MAX_FILES} files per message`)
+    return Promise.all(
+      files.map(async ({ id }) => {
+        // The id is the stored name, so it must be a plain name inside the session's directory.
+        if (typeof id !== 'string' || safeFileName(id) !== id) throw new BridgeError(400, 'Invalid file id')
+        const path = join(dir, id)
+        const info = await stat(path).catch(() => undefined)
+        if (!info?.isFile()) throw new BridgeError(400, `Uploaded file not found: ${id}`)
+        return { id, name: id, size: info.size, path }
+      }),
+    )
   }
 
   private async record(id: string): Promise<SessionRecord> {
@@ -265,9 +347,13 @@ export class AgentBridge {
       const resuming = !!record.providerSessionId
       this.setStatus(id, 'starting')
       try {
-        const runtime = await this.provider(record.agentId).start({
+        const provider = this.provider(record.agentId)
+        const uploadDir = this.acceptsFiles(provider) ? join(this.uploadDir!, record.id) : undefined
+        if (uploadDir) await mkdir(uploadDir, { recursive: true })
+        const runtime = await provider.start({
           sessionId: record.id,
           cwd: record.cwd,
+          uploadDir,
           model: record.model,
           permissionMode: record.permissionMode,
           effort: record.effort,
@@ -408,6 +494,44 @@ function checkImages(images: ImageAttachment[], supported: boolean | undefined) 
       throw new BridgeError(400, 'Image is larger than 5 MB')
     }
   }
+}
+
+/** Keeps the client's file name (the agent sees it) but makes it a single safe path segment. */
+function safeFileName(name: string): string {
+  const cleaned = basename(String(name).replace(/\\/g, '/'))
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim()
+  if (!cleaned || cleaned === '.' || cleaned === '..') return 'file'
+  // Most file systems allow 255 bytes per name; leave room for a `-N` suffix.
+  if (Buffer.byteLength(cleaned) <= 200) return cleaned
+  const [stem, ext] = splitExtension(cleaned)
+  let short = stem
+  while (Buffer.byteLength(short + ext) > 200) short = short.slice(0, -1)
+  return short + ext
+}
+
+/** `report.pdf` → [`report`, `.pdf`]; a leading dot (`.env`) is not an extension. */
+function splitExtension(name: string): [string, string] {
+  const dot = name.lastIndexOf('.')
+  return dot > 0 && name.length - dot <= 16 ? [name.slice(0, dot), name.slice(dot)] : [name, '']
+}
+
+/** Creates `name` in `dir`, or `name-1`, `name-2`, ... (before the extension) when it exists. */
+async function createUnique(dir: string, name: string): Promise<{ handle: FileHandle; name: string }> {
+  const [stem, ext] = splitExtension(name)
+  for (let n = 0; ; n++) {
+    const candidate = n ? `${stem}-${n}${ext}` : name
+    try {
+      // `wx` fails if the file exists, so concurrent uploads of one name cannot take the same slot.
+      return { handle: await open(join(dir, candidate), 'wx'), name: candidate }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+  }
+}
+
+function formatSize(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${Math.round(bytes / (1024 * 1024))} MB` : `${Math.round(bytes / 1024)} KB`
 }
 
 function titleFrom(text: string): string {

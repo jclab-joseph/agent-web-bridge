@@ -23,7 +23,7 @@ import type {
   ToolMessage,
 } from '@agent-web-bridge/protocol'
 import { randomUUID } from 'node:crypto'
-import type { AgentEvent, AgentProvider, AgentRuntime, AgentStartOptions, UserInput } from '../agent'
+import type { AgentEvent, AgentProvider, AgentRuntime, AgentStartOptions, UploadedFile, UserInput } from '../agent'
 import { errorMessage } from '../bridge'
 import { AsyncQueue } from '../queue'
 
@@ -82,6 +82,10 @@ const DEFAULT_EFFORT = 'default'
 const MAX_TOOL_OUTPUT = 20_000
 const PARTIAL_FLUSH_MS = 80
 const ASK_USER_QUESTION = 'AskUserQuestion'
+/** Environment variable holding the session's upload directory in the agent process. */
+export const UPLOAD_DIR_ENV = 'AGENT_UPLOAD_DIR'
+/** Permission rules for printing the upload directory, added to `allowedTools` when uploads are on. */
+const UPLOAD_DIR_RULES = [`Bash(echo $${UPLOAD_DIR_ENV})`, `Bash(echo "$${UPLOAD_DIR_ENV}")`]
 
 const MODELS: SelectOption[] = [
   { id: DEFAULT_MODEL, label: 'Default' },
@@ -121,6 +125,8 @@ export function createClaudeCodeProvider(options: ClaudeCodeProviderOptions = {}
       defaultPermissionMode: 'default',
       defaultEffort: DEFAULT_EFFORT,
       supportsImages: true,
+      // Uploaded files are saved on the server and their paths given to Claude, which reads them with its tools.
+      supportsFiles: true,
     },
     start: (startOptions) => ClaudeCodeRuntime.start(startOptions, options),
   }
@@ -132,10 +138,11 @@ async function resolveQueryOptions(
 ): Promise<Options> {
   const host =
     typeof provider.queryOptions === 'function' ? await provider.queryOptions(session) : (provider.queryOptions ?? {})
+  const vars = { ...provider.env, ...(session.uploadDir ? { [UPLOAD_DIR_ENV]: session.uploadDir } : {}) }
   let env = host.env
-  if (provider.env) {
+  if (Object.keys(vars).length) {
     env = { ...(env ?? process.env) }
-    for (const [key, value] of Object.entries(provider.env)) {
+    for (const [key, value] of Object.entries(vars)) {
       if (value === undefined) delete env[key]
       else env[key] = value
     }
@@ -144,6 +151,11 @@ async function resolveQueryOptions(
     forwardSubagentText: true,
     ...host,
     env,
+    // Lets the agent find (`echo $AGENT_UPLOAD_DIR`, see filesNote) and read uploaded files without asking.
+    allowedTools: session.uploadDir ? [...(host.allowedTools ?? []), ...UPLOAD_DIR_RULES] : host.allowedTools,
+    additionalDirectories: session.uploadDir
+      ? [...(host.additionalDirectories ?? []), session.uploadDir]
+      : host.additionalDirectories,
     cwd: session.cwd,
     model: sdkModel(session.model),
     effort: sdkEffort(session.effort),
@@ -213,8 +225,9 @@ class ClaudeCodeRuntime implements AgentRuntime {
     this.mode = this.requestedMode = queryOptions.permissionMode
   }
 
-  async send({ text, images }: UserInput) {
+  async send({ text: message, images, files }: UserInput) {
     this.setStatus('busy')
+    const text = files?.length ? [message, filesNote(files)].filter(Boolean).join('\n\n') : message
     const content = images?.length
       ? [
           ...images.map((image) => ({
@@ -489,6 +502,17 @@ function sdkModel(model: string | undefined): string | undefined {
 
 function sdkEffort(effort: string | undefined): EffortLevel | undefined {
   return effort && effort !== DEFAULT_EFFORT ? (effort as EffortLevel) : undefined
+}
+
+/** Tells Claude where the uploaded files are; paths are relative to `$AGENT_UPLOAD_DIR` to keep them short. */
+function filesNote(files: UploadedFile[]): string {
+  const lines = files.map((file) => `- $${UPLOAD_DIR_ENV}/${file.name} (${file.size} bytes)`)
+  return [
+    `The user attached ${files.length === 1 ? 'a file' : 'files'}, saved on this machine at:`,
+    ...lines,
+    // Read and other file tools take absolute paths and do not expand variables.
+    `Tools other than Bash do not expand $${UPLOAD_DIR_ENV}; get its value by running \`echo $${UPLOAD_DIR_ENV}\` as a command of its own (it is pre-approved), then use Read for images and PDFs.`,
+  ].join('\n')
 }
 
 /** Reads AskUserQuestion input defensively; it comes from the model. */
